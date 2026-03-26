@@ -9,6 +9,7 @@
     timerLoopId: 0,
     timerLoopSignature: "",
     lastBackground: "",
+    backgroundPushBlocked: false,
     lastBackgroundProbeAt: 0,
     lastBackgroundProbeKey: "",
   };
@@ -367,8 +368,9 @@
       return;
     }
     state.lastBackground = color;
-    if (typeof pycmd === "function") {
+    if (!state.backgroundPushBlocked && typeof pycmd === "function") {
       pycmd(`speed-streak:card-background:${encodeURIComponent(JSON.stringify({ color }))}`);
+      state.backgroundPushBlocked = true;
     }
   }
 
@@ -430,12 +432,22 @@
   window.SpeedStreakCardTimer = {
     receiveState(nextState) {
       ensureMounted();
+      state.backgroundPushBlocked = false;
       render(nextState);
+      syncTimerLoop();
+    },
+    receiveTimerTick(timerPayload) {
+      if (!state.data || !timerPayload || typeof timerPayload !== "object") {
+        return;
+      }
+      state.data = { ...state.data, ...timerPayload };
+      renderTimerState(state.data);
       syncTimerLoop();
     },
     hide() {
       state.data = null;
       state.timerLoopSignature = "";
+      state.backgroundPushBlocked = false;
       stopTimerLoop();
       setStyleProperty(document.documentElement, "--speed-streak-card-offset", "0px");
       const root = document.getElementById("speed-streak-card-timer");

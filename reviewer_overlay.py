@@ -22,7 +22,7 @@ from .display_mode import (
 from .game_state import CompanionGameEngine
 from .haptics import HapticsController
 from .review_later import open_review_later_manager, sync_review_later_membership
-from .render_mode import RENDER_MODE_CLASSIC, RENDER_MODE_ULTRA_LOW_RESOURCE, normalize_render_mode
+from .render_mode import RENDER_MODE_CLASSIC, RENDER_MODE_LOW_RESOURCE, RENDER_MODE_ULTRA_LOW_RESOURCE, normalize_render_mode
 from .settings_dialog import open_settings_dialog
 from .stats_dialog import open_stats_dialog
 from .stats_store import StatsStore
@@ -159,6 +159,7 @@ class ReviewerOverlayController:
         self._display_mode_prompt_scheduled = False
         self._display_mode_prompt_open = False
         self._last_reduced_live_update_bucket: Optional[int] = None
+        self._last_timer_only_update_bucket: Optional[int] = None
         self._card_timer_bootstrap = self._build_card_timer_bootstrap()
         self._sidebar_background = self._default_sidebar_background()
         self._load_persisted_settings()
@@ -206,8 +207,10 @@ class ReviewerOverlayController:
                 color = str(data.get("color", "") or "").strip()
             except Exception:
                 color = ""
-            self._sidebar_background = color or self._default_sidebar_background()
-            self._push_state(only_if_changed=False)
+            next_color = color or self._default_sidebar_background()
+            if next_color != self._sidebar_background:
+                self._sidebar_background = next_color
+                self._push_state(only_if_changed=False)
             return (True, None)
         if message == "speed-streak:open-settings":
             self._open_settings_dialog()
@@ -485,12 +488,15 @@ class ReviewerOverlayController:
             self._push_state(only_if_changed=False)
         elif self._should_push_live_update():
             self._push_state(only_if_changed=False)
+        elif self._should_push_timer_only_update():
+            self._push_timer_only_update()
 
     def _handle_non_review_state(self) -> None:
         self._set_sidebar_hidden(True)
         self._hide_card_timer()
         self._last_reviewer_signature = ""
         self._last_reduced_live_update_bucket = None
+        self._last_timer_only_update_bucket = None
         state = self.engine.state
         if (
             not self._auto_paused_for_non_review
@@ -651,20 +657,55 @@ class ReviewerOverlayController:
             self._last_reduced_live_update_bucket = self._current_reduced_live_update_bucket()
         else:
             self._last_reduced_live_update_bucket = None
+        self._last_timer_only_update_bucket = self._current_timer_only_update_bucket()
 
     def _uses_reduced_render_timing(self) -> bool:
-        return self.render_mode == RENDER_MODE_ULTRA_LOW_RESOURCE
+        return self.render_mode in {RENDER_MODE_LOW_RESOURCE, RENDER_MODE_ULTRA_LOW_RESOURCE}
 
     def _current_reduced_live_update_bucket(self) -> int:
-        return int(time.monotonic() / 0.5)
+        interval_seconds = 0.25 if self.render_mode == RENDER_MODE_LOW_RESOURCE else 0.5
+        return int(time.monotonic() / interval_seconds)
 
     def _should_push_live_update(self) -> bool:
         if not self._uses_reduced_render_timing():
             return True
         return self._current_reduced_live_update_bucket() != self._last_reduced_live_update_bucket
 
+    def _current_timer_only_update_bucket(self) -> int:
+        return int(time.monotonic() / 0.5) if self.render_mode == RENDER_MODE_ULTRA_LOW_RESOURCE else int(time.monotonic() / 0.1)
+
+    def _should_push_timer_only_update(self) -> bool:
+        state = self.engine.state
+        if (
+            not state.enabled
+            or not state.visuals_enabled
+            or state.phase not in {"question", "answer"}
+            or state.paused
+            or state.phase_limit_ms <= 0
+            or (state.phase == "question" and state.first_card_free)
+        ):
+            return False
+        return self._current_timer_only_update_bucket() != self._last_timer_only_update_bucket
+
+    def _push_timer_only_update(self) -> None:
+        timer_display = self._build_timer_display_payload()
+        payload = json.dumps(timer_display)
+        if self._sidebar_web is not None:
+            self._sidebar_web.eval(
+                f"window.SpeedStreak && window.SpeedStreak.receiveTimerTick && window.SpeedStreak.receiveTimerTick({payload});"
+            )
+        if self._review_web is not None:
+            self._review_web.eval(
+                f"window.SpeedStreakCardTimer && window.SpeedStreakCardTimer.receiveTimerTick && window.SpeedStreakCardTimer.receiveTimerTick({payload});"
+            )
+        self._last_timer_only_update_bucket = self._current_timer_only_update_bucket()
+
     def _timer_display_step_ms(self) -> int:
-        return 500 if self.render_mode == RENDER_MODE_ULTRA_LOW_RESOURCE else 100
+        if self.render_mode == RENDER_MODE_ULTRA_LOW_RESOURCE:
+            return 500
+        if self.render_mode == RENDER_MODE_LOW_RESOURCE:
+            return 250
+        return 100
 
     def _raw_timer_remaining_ms(self, now_ms: int) -> int:
         state = self.engine.state

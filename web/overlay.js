@@ -23,6 +23,7 @@
     lastSidebarBackground: "",
     lastFilterValue: "",
     lastCoreSize: "",
+    lastDiscSignature: "",
   };
 
   const DEFAULT_CUSTOM_COLORS = {
@@ -1113,12 +1114,16 @@
 
     const ringCount = Math.max(1, Math.ceil(colors.length / 10));
     const signature = colors.join("|");
+    const discSignature = `${colors.length}|${Math.max(1, ringCount)}`;
     if (signature === state.lastColorsSignature && ringCount === state.lastRingCount) {
       if (disc) {
         const discSize = clamp(118 + (colors.length * 5), 118, 280);
-        disc.style.setProperty("--disc-size", `${discSize}px`);
-        disc.style.setProperty("--disc-speed", `${Math.max(5, 16 - (colors.length * 0.12))}s`);
-        disc.style.setProperty("--disc-opacity", `${clamp(0.35 + (colors.length * 0.015), 0.35, 0.92)}`);
+        if (discSignature !== state.lastDiscSignature) {
+          state.lastDiscSignature = discSignature;
+          disc.style.setProperty("--disc-size", `${discSize}px`);
+          disc.style.setProperty("--disc-speed", `${Math.max(5, 16 - (colors.length * 0.12))}s`);
+          disc.style.setProperty("--disc-opacity", `${clamp(0.35 + (colors.length * 0.015), 0.35, 0.92)}`);
+        }
       }
       return;
     }
@@ -1166,9 +1171,12 @@
 
     if (disc) {
       const discSize = clamp(118 + (colors.length * 5), 118, 280);
-      disc.style.setProperty("--disc-size", `${discSize}px`);
-      disc.style.setProperty("--disc-speed", `${Math.max(5, 16 - (colors.length * 0.12))}s`);
-      disc.style.setProperty("--disc-opacity", `${clamp(0.35 + (colors.length * 0.015), 0.35, 0.92)}`);
+      if (discSignature !== state.lastDiscSignature) {
+        state.lastDiscSignature = discSignature;
+        disc.style.setProperty("--disc-size", `${discSize}px`);
+        disc.style.setProperty("--disc-speed", `${Math.max(5, 16 - (colors.length * 0.12))}s`);
+        disc.style.setProperty("--disc-opacity", `${clamp(0.35 + (colors.length * 0.015), 0.35, 0.92)}`);
+      }
     }
 
     state.lastColorsSignature = signature;
@@ -1573,6 +1581,7 @@
     state.lastColorsSignature = "";
     state.lastRingCount = 0;
     state.lastSceneScale = 1;
+    state.lastDiscSignature = "";
   }
 
   function blendRgb(a, b, t) {
@@ -1590,6 +1599,14 @@
     receiveState(nextState) {
       ensureMounted();
       render(nextState);
+      syncTimerLoop();
+    },
+    receiveTimerTick(timerPayload) {
+      if (!state.data || !timerPayload || typeof timerPayload !== "object") {
+        return;
+      }
+      state.data = { ...state.data, ...timerPayload };
+      renderLiveTimerState(state.data);
       syncTimerLoop();
     },
   };
