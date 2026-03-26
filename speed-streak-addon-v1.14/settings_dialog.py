@@ -1271,10 +1271,10 @@ class SettingsDialog(QDialog):
             self._build_setting_row(
                 frame,
                 "Render mode",
-                "Classic keeps the original continuous visual update style and is the default. Low Resource reduces repeated "
-                "UI work and may help on slower computers, but timer motion can look a bit less smooth.",
+                "Classic keeps the original continuous visual update style. Low Resource keeps smoother timer updates while avoiding the continuous "
+                "browser animation loop. Ultra Low Resource steps the timers every half second, freezes satellite motion, and skips extra flare effects.",
                 self.render_mode_combo,
-                control_width=210,
+                control_width=230,
             )
         )
 

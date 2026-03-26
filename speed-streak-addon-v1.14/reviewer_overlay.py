@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from urllib.parse import unquote
 from typing import Any, Optional
@@ -21,7 +22,7 @@ from .display_mode import (
 from .game_state import CompanionGameEngine
 from .haptics import HapticsController
 from .review_later import open_review_later_manager, sync_review_later_membership
-from .render_mode import RENDER_MODE_CLASSIC, normalize_render_mode
+from .render_mode import RENDER_MODE_CLASSIC, RENDER_MODE_ULTRA_LOW_RESOURCE, normalize_render_mode
 from .settings_dialog import open_settings_dialog
 from .stats_dialog import open_stats_dialog
 from .stats_store import StatsStore
@@ -157,6 +158,7 @@ class ReviewerOverlayController:
         self._display_mode_prompt_pending = False
         self._display_mode_prompt_scheduled = False
         self._display_mode_prompt_open = False
+        self._last_reduced_live_update_bucket: Optional[int] = None
         self._card_timer_bootstrap = self._build_card_timer_bootstrap()
         self._sidebar_background = self._default_sidebar_background()
         self._load_persisted_settings()
@@ -481,13 +483,14 @@ class ReviewerOverlayController:
         if event:
             self.haptics.play_pattern("timeout")
             self._push_state(only_if_changed=False)
-        else:
+        elif self._should_push_live_update():
             self._push_state(only_if_changed=False)
 
     def _handle_non_review_state(self) -> None:
         self._set_sidebar_hidden(True)
         self._hide_card_timer()
         self._last_reviewer_signature = ""
+        self._last_reduced_live_update_bucket = None
         state = self.engine.state
         if (
             not self._auto_paused_for_non_review
@@ -629,6 +632,7 @@ class ReviewerOverlayController:
         if only_if_changed and nonce == self._last_nonce_sent:
             return
         self._last_nonce_sent = nonce
+        timer_display = self._build_timer_display_payload()
         payload = json.dumps(
             {
                 **state,
@@ -637,11 +641,63 @@ class ReviewerOverlayController:
                 "sidebarBackground": self._sidebar_background or self._default_sidebar_background(),
                 "displayMode": self.display_mode,
                 "renderMode": self.render_mode,
+                **timer_display,
             }
         )
         if self._sidebar_web is not None:
             self._sidebar_web.eval(f"window.SpeedStreak && window.SpeedStreak.receiveState({payload});")
         self._push_card_timer_state(payload)
+        if self._uses_reduced_render_timing():
+            self._last_reduced_live_update_bucket = self._current_reduced_live_update_bucket()
+        else:
+            self._last_reduced_live_update_bucket = None
+
+    def _uses_reduced_render_timing(self) -> bool:
+        return self.render_mode == RENDER_MODE_ULTRA_LOW_RESOURCE
+
+    def _current_reduced_live_update_bucket(self) -> int:
+        return int(time.monotonic() / 0.5)
+
+    def _should_push_live_update(self) -> bool:
+        if not self._uses_reduced_render_timing():
+            return True
+        return self._current_reduced_live_update_bucket() != self._last_reduced_live_update_bucket
+
+    def _timer_display_step_ms(self) -> int:
+        return 500 if self.render_mode == RENDER_MODE_ULTRA_LOW_RESOURCE else 100
+
+    def _raw_timer_remaining_ms(self, now_ms: int) -> int:
+        state = self.engine.state
+        if (
+            not state.enabled
+            or not state.visuals_enabled
+            or state.phase == "idle"
+            or state.phase_start_epoch_ms <= 0
+            or state.phase_limit_ms <= 0
+            or (state.phase == "question" and state.first_card_free)
+        ):
+            return 0
+        if state.paused:
+            return max(0, int(state.paused_remaining_ms))
+        return max(0, int(state.phase_limit_ms) - max(0, now_ms - int(state.phase_start_epoch_ms)))
+
+    def _snap_timer_remaining_ms(self, remaining_ms: int, step_ms: int) -> int:
+        remaining = max(0, int(remaining_ms))
+        step = max(1, int(step_ms))
+        if remaining <= 0:
+            return 0
+        return ((remaining + step - 1) // step) * step
+
+    def _build_timer_display_payload(self) -> dict[str, Any]:
+        now_ms = int(time.time() * 1000)
+        step_ms = self._timer_display_step_ms()
+        remaining_ms = self._snap_timer_remaining_ms(self._raw_timer_remaining_ms(now_ms), step_ms)
+        return {
+            "timerDisplayNowEpochMs": now_ms,
+            "timerDisplayRemainingMs": remaining_ms,
+            "timerDisplayStepMs": step_ms,
+            "timerDisplaySecondsText": f"{remaining_ms / 1000:.1f}",
+        }
 
     def _ensure_display_surface(self, reviewer: Reviewer) -> None:
         if self.display_mode == DISPLAY_MODE_COMPATIBILITY:

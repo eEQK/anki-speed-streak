@@ -6,7 +6,8 @@
   const state = {
     mounted: false,
     data: null,
-    animationId: 0,
+    timerLoopId: 0,
+    timerLoopSignature: "",
     lastBackground: "",
     lastBackgroundProbeAt: 0,
     lastBackgroundProbeKey: "",
@@ -82,57 +83,151 @@
 
   function getRenderMode(data) {
     const normalized = String(data?.renderMode || "classic").trim().toLowerCase();
+    if (normalized === "ultra_low_resource") {
+      return "ultra_low_resource";
+    }
     return normalized === "low_resource" ? "low_resource" : "classic";
   }
 
-  function stopAnimationLoop() {
-    if (state.animationId) {
-      window.cancelAnimationFrame(state.animationId);
-      state.animationId = 0;
+  function getTimerStepMs(data) {
+    const explicit = Math.max(0, Number(data?.timerDisplayStepMs || 0));
+    if (explicit) {
+      return explicit;
+    }
+    return getRenderMode(data) === "ultra_low_resource" ? 500 : 100;
+  }
+
+  function stopTimerLoop() {
+    if (state.timerLoopId) {
+      window.clearTimeout(state.timerLoopId);
+      state.timerLoopId = 0;
     }
   }
 
-  function syncAnimationLoop() {
-    if (getRenderMode(state.data) === "classic") {
-      if (!state.animationId) {
-        state.animationId = window.requestAnimationFrame(animationLoop);
-      }
+  function timerLoopSignature(data) {
+    const phase = String(data?.phase || "idle");
+    return [
+      getTimerStepMs(data),
+      phase,
+      Number(data?.phaseStartEpochMs || 0),
+      Number(data?.phaseLimitMs || 0),
+      Number(data?.paused || 0),
+      Number(data?.firstCardFree || 0),
+      Number(data?.enabled || 0),
+      Number(data?.visualsEnabled || 0),
+      Number(data?.showCardTimer || 0),
+    ].join("|");
+  }
+
+  function needsLiveTimerLoop(data) {
+    if (!data || !Number(data.enabled || 0) || !Number(data.visualsEnabled || 0) || !Number(data.showCardTimer || 0)) {
+      return false;
+    }
+    const phase = String(data.phase || "idle");
+    if (phase !== "question" && phase !== "answer") {
+      return false;
+    }
+    if (Boolean(data.paused)) {
+      return false;
+    }
+    if (Boolean(data.firstCardFree) && phase === "question") {
+      return false;
+    }
+    return Number(data.phaseLimitMs || 0) > 0;
+  }
+
+  function nextTimerLoopDelayMs(data) {
+    const stepMs = Math.max(1, getTimerStepMs(data));
+    const anchorMs = Number(data?.timerDisplayNowEpochMs || 0);
+    if (!anchorMs) {
+      return stepMs;
+    }
+    const elapsed = Math.max(0, Date.now() - anchorMs);
+    const remainder = elapsed % stepMs;
+    const delay = remainder === 0 ? stepMs : stepMs - remainder;
+    return Math.max(16, delay);
+  }
+
+  function scheduleTimerLoop() {
+    if (!state.data || state.timerLoopId) {
       return;
     }
-    stopAnimationLoop();
+    state.timerLoopId = window.setTimeout(() => {
+      state.timerLoopId = 0;
+      if (!state.data) {
+        return;
+      }
+      renderTimerState(state.data);
+      if (needsLiveTimerLoop(state.data)) {
+        scheduleTimerLoop();
+      }
+    }, nextTimerLoopDelayMs(state.data));
+  }
+
+  function syncTimerLoop() {
+    if (!state.data || !needsLiveTimerLoop(state.data)) {
+      state.timerLoopSignature = "";
+      stopTimerLoop();
+      return;
+    }
+    const signature = timerLoopSignature(state.data);
+    if (signature !== state.timerLoopSignature) {
+      state.timerLoopSignature = signature;
+      stopTimerLoop();
+    }
+    scheduleTimerLoop();
+  }
+
+  function computeSharedRemainingMs(data) {
+    const baseRemaining = Math.max(0, Number(data?.timerDisplayRemainingMs || 0));
+    const anchorMs = Number(data?.timerDisplayNowEpochMs || 0);
+    const stepMs = Math.max(1, getTimerStepMs(data));
+    if (!anchorMs || baseRemaining <= 0) {
+      return baseRemaining;
+    }
+    const elapsed = Math.max(0, Date.now() - anchorMs);
+    const elapsedSteps = Math.floor(elapsed / stepMs);
+    return Math.max(0, baseRemaining - (elapsedSteps * stepMs));
+  }
+
+  function formatTimerSecondsText(remainingMs) {
+    return `${(Math.max(0, Number(remainingMs || 0)) / 1000).toFixed(1)}`;
   }
 
   function computeTimer(data) {
     const phase = data.phase || "idle";
-    const start = Number(data.phaseStartEpochMs || 0);
     const limit = Number(data.phaseLimitMs || 0);
     const free = Boolean(data.firstCardFree && phase === "question");
     const paused = Boolean(data.paused);
 
-    if (!data.enabled || !data.visualsEnabled || !data.showCardTimer || phase === "idle" || !start) {
+    if (!data.enabled || !data.visualsEnabled || !data.showCardTimer || phase === "idle" || !Number(data.phaseStartEpochMs || 0)) {
       return { visible: false };
     }
     if (free || !limit) {
-      return { visible: true, free: true, phase, paused: false, remaining: 0, total: 0 };
+      return { visible: true, free: true, phase, paused: false, remaining: 0, total: 0, secondsText: "0.0" };
     }
+    const remaining = paused
+      ? Math.max(0, Number(data.timerDisplayRemainingMs || 0))
+      : computeSharedRemainingMs(data);
     if (paused) {
       return {
         visible: true,
         free: false,
         phase,
         paused: true,
-        remaining: Number(data.pausedRemainingMs || 0),
+        remaining,
         total: limit,
+        secondsText: formatTimerSecondsText(remaining),
       };
     }
-    const elapsed = Math.max(0, Date.now() - start);
     return {
       visible: true,
       free: false,
       phase,
       paused: false,
-      remaining: Math.max(0, limit - elapsed),
+      remaining,
       total: limit,
+      secondsText: formatTimerSecondsText(remaining),
     };
   }
 
@@ -277,8 +372,7 @@
     }
   }
 
-  function render(data) {
-    ensureMounted();
+  function renderTimerState(data) {
     const root = document.getElementById("speed-streak-card-timer");
     const value = document.getElementById("sstValue");
     const fill = document.getElementById("sstFill");
@@ -286,8 +380,6 @@
       return;
     }
 
-    state.data = data;
-    syncSidebarBackground(data);
     const timer = computeTimer(data);
     if (!timer.visible) {
       root.classList.add("hidden");
@@ -308,7 +400,6 @@
     }
 
     const timerRamp = getTimerRampColors(data);
-    const seconds = Math.max(0, Number(timer.remaining || 0) / 1000);
     const ratio = timer.total ? clamp(timer.remaining / timer.total, 0, 1) : 0;
     const danger = ratio <= 0.3;
     const blendTarget = ratio > 0.5 ? timerRamp.yellow : timerRamp.red;
@@ -316,30 +407,36 @@
     const localT = ratio > 0.5 ? (1 - ratio) / 0.5 : (0.5 - ratio) / 0.5;
     const color = blendRgb(blendStart, blendTarget, clamp(localT, 0, 1));
 
-    setText(value, `${seconds.toFixed(1)}s`);
+    setText(value, `${timer.secondsText}s`);
     setStyleProperty(root, "--sst-progress", `${ratio}`);
     setStyleProperty(root, "--sst-color", color);
     root.classList.toggle("danger", danger);
   }
 
-  function animationLoop() {
-    if (!state.data || getRenderMode(state.data) !== "classic") {
-      state.animationId = 0;
+  function render(data) {
+    ensureMounted();
+    const root = document.getElementById("speed-streak-card-timer");
+    const value = document.getElementById("sstValue");
+    const fill = document.getElementById("sstFill");
+    if (!root || !value || !fill) {
       return;
     }
-    render(state.data);
-    state.animationId = window.requestAnimationFrame(animationLoop);
+
+    state.data = data;
+    syncSidebarBackground(data);
+    renderTimerState(data);
   }
 
   window.SpeedStreakCardTimer = {
     receiveState(nextState) {
       ensureMounted();
       render(nextState);
-      syncAnimationLoop();
+      syncTimerLoop();
     },
     hide() {
       state.data = null;
-      stopAnimationLoop();
+      state.timerLoopSignature = "";
+      stopTimerLoop();
       setStyleProperty(document.documentElement, "--speed-streak-card-offset", "0px");
       const root = document.getElementById("speed-streak-card-timer");
       if (root) {

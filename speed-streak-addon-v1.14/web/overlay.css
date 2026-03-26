@@ -532,6 +532,11 @@
   animation: acg-orbit var(--orbit-duration, 12s) linear infinite;
 }
 
+.speed-streak-sidebar.ultra-low-resource .acg-satellite {
+  animation: none;
+  transform: translate(-50%, -50%) rotate(var(--angle)) translateX(var(--radius));
+}
+
 .speed-streak-sidebar .acg-satellite::after {
   content: "";
   position: absolute;
@@ -544,6 +549,10 @@
   background: linear-gradient(90deg, rgba(255,255,255,0), var(--sat-color) 70%, rgba(255,255,255,0.7));
   filter: blur(5px);
   opacity: 0.38;
+}
+
+.speed-streak-sidebar.ultra-low-resource .acg-satellite::after {
+  display: none;
 }
 
 .speed-streak-sidebar .acg-satellite.collapse {
@@ -1384,6 +1393,11 @@
   border-radius: 50%;
   transform: translate(-50%, -50%);
   pointer-events: none;
+}
+
+.speed-streak-sidebar.ultra-low-resource .acg-shockwave,
+.speed-streak-sidebar.ultra-low-resource .acg-milestone-flare {
+  display: none;
 }
 
 .speed-streak-sidebar .acg-shockwave {

@@ -2,7 +2,8 @@
   const state = {
     mounted: false,
     data: null,
-    animationId: 0,
+    timerLoopId: 0,
+    timerLoopSignature: "",
     lastColorsSignature: "",
     lastRingCount: 0,
     lastNonce: -1,
@@ -575,50 +576,149 @@
 
   function getRenderMode(data) {
     const normalized = String(data?.renderMode || "classic").trim().toLowerCase();
+    if (normalized === "ultra_low_resource") {
+      return "ultra_low_resource";
+    }
     return normalized === "low_resource" ? "low_resource" : "classic";
   }
 
-  function stopAnimationLoop() {
-    if (state.animationId) {
-      cancelAnimationFrame(state.animationId);
-      state.animationId = 0;
+  function isReducedRenderMode(data) {
+    return getRenderMode(data) !== "classic";
+  }
+
+  function isUltraLowResourceMode(data) {
+    return getRenderMode(data) === "ultra_low_resource";
+  }
+
+  function getTimerStepMs(data) {
+    const explicit = Math.max(0, Number(data?.timerDisplayStepMs || 0));
+    if (explicit) {
+      return explicit;
+    }
+    return isUltraLowResourceMode(data) ? 500 : 100;
+  }
+
+  function stopTimerLoop() {
+    if (state.timerLoopId) {
+      clearTimeout(state.timerLoopId);
+      state.timerLoopId = 0;
     }
   }
 
-  function syncAnimationLoop() {
-    if (getRenderMode(state.data) === "classic") {
-      if (!state.animationId) {
-        state.animationId = requestAnimationFrame(animationLoop);
-      }
+  function timerLoopSignature(data) {
+    const phase = String(data?.phase || "idle");
+    return [
+      getTimerStepMs(data),
+      phase,
+      Number(data?.phaseStartEpochMs || 0),
+      Number(data?.phaseLimitMs || 0),
+      Number(data?.paused || 0),
+      Number(data?.firstCardFree || 0),
+      Number(data?.enabled || 0),
+      Number(data?.visualsEnabled || 0),
+    ].join("|");
+  }
+
+  function needsLiveTimerLoop(data) {
+    if (!data || !Number(data.enabled || 0) || !Number(data.visualsEnabled || 0)) {
+      return false;
+    }
+    const phase = String(data.phase || "idle");
+    if (phase !== "question" && phase !== "answer") {
+      return false;
+    }
+    if (Boolean(data.paused)) {
+      return false;
+    }
+    if (Boolean(data.firstCardFree) && phase === "question") {
+      return false;
+    }
+    return Number(data.phaseLimitMs || 0) > 0;
+  }
+
+  function nextTimerLoopDelayMs(data) {
+    const stepMs = Math.max(1, getTimerStepMs(data));
+    const anchorMs = Number(data?.timerDisplayNowEpochMs || 0);
+    if (!anchorMs) {
+      return stepMs;
+    }
+    const elapsed = Math.max(0, Date.now() - anchorMs);
+    const remainder = elapsed % stepMs;
+    const delay = remainder === 0 ? stepMs : stepMs - remainder;
+    return Math.max(16, delay);
+  }
+
+  function scheduleTimerLoop() {
+    if (!state.data || state.timerLoopId) {
       return;
     }
-    stopAnimationLoop();
+    state.timerLoopId = window.setTimeout(() => {
+      state.timerLoopId = 0;
+      if (!state.data) {
+        return;
+      }
+      renderLiveTimerState(state.data);
+      if (needsLiveTimerLoop(state.data)) {
+        scheduleTimerLoop();
+      }
+    }, nextTimerLoopDelayMs(state.data));
+  }
+
+  function syncTimerLoop() {
+    if (!state.data || !needsLiveTimerLoop(state.data)) {
+      state.timerLoopSignature = "";
+      stopTimerLoop();
+      return;
+    }
+    const signature = timerLoopSignature(state.data);
+    if (signature !== state.timerLoopSignature) {
+      state.timerLoopSignature = signature;
+      stopTimerLoop();
+    }
+    scheduleTimerLoop();
+  }
+
+  function computeSharedRemainingMs(data) {
+    const baseRemaining = Math.max(0, Number(data?.timerDisplayRemainingMs || 0));
+    const anchorMs = Number(data?.timerDisplayNowEpochMs || 0);
+    const stepMs = Math.max(1, getTimerStepMs(data));
+    if (!anchorMs || baseRemaining <= 0) {
+      return baseRemaining;
+    }
+    const elapsed = Math.max(0, Date.now() - anchorMs);
+    const elapsedSteps = Math.floor(elapsed / stepMs);
+    return Math.max(0, baseRemaining - (elapsedSteps * stepMs));
+  }
+
+  function formatTimerSecondsText(remainingMs) {
+    return `${(Math.max(0, Number(remainingMs || 0)) / 1000).toFixed(1)}`;
   }
 
   function computeTimer(data) {
     const phase = data.phase || "idle";
-    const start = Number(data.phaseStartEpochMs || 0);
     const limit = Number(data.phaseLimitMs || 0);
     const free = Boolean(data.firstCardFree && phase === "question");
     const paused = Boolean(data.paused);
 
-    if (phase === "idle" || !start) {
-      return { phase, free, paused, remaining: 0, total: 0 };
+    if (phase === "idle" || !Number(data.phaseStartEpochMs || 0)) {
+      return { phase, free, paused, remaining: 0, total: 0, secondsText: "0.0" };
     }
     if (free || !limit) {
-      return { phase, free: true, paused, remaining: 0, total: 0 };
+      return { phase, free: true, paused, remaining: 0, total: 0, secondsText: "0.0" };
     }
+    const remaining = paused
+      ? Math.max(0, Number(data.timerDisplayRemainingMs || 0))
+      : computeSharedRemainingMs(data);
     if (paused) {
-      return { phase, free: false, paused: true, remaining: Number(data.pausedRemainingMs || 0), total: limit };
+      return { phase, free: false, paused: true, remaining, total: limit, secondsText: formatTimerSecondsText(remaining) };
     }
-
-    const elapsed = Math.max(0, Date.now() - start);
     return {
       phase,
       free: false,
       paused: false,
-      remaining: Math.max(0, limit - elapsed),
+      remaining,
       total: limit,
+      secondsText: formatTimerSecondsText(remaining),
     };
   }
 
@@ -1125,18 +1225,23 @@
 
     const streak = Number(data.streak || 0);
     const milestones = new Set([10, 25, 50, 100]);
+    const ultraLowResource = isUltraLowResourceMode(data);
     if (["again", "hard", "good", "easy"].includes(data.lastEventType)) {
-      spawnShockwave(data.lastSatelliteColor || "blue");
-      if (milestones.has(streak)) {
-        spawnMilestoneFlare();
+      if (!ultraLowResource) {
+        spawnShockwave(data.lastSatelliteColor || "blue");
+        if (milestones.has(streak)) {
+          spawnMilestoneFlare();
+        }
       }
     } else if (data.lastEventType === "review-later-added") {
       showToast("Review Later");
     } else if (data.lastEventType === "review-later-removed") {
       showToast("Removed from 'Review Later'");
     } else if (data.lastEventType === "timeout") {
-      triggerTimeoutCollapse(state.prevColors);
-      spawnShockwave("red");
+      if (!ultraLowResource) {
+        triggerTimeoutCollapse(state.prevColors);
+        spawnShockwave("red");
+      }
     }
 
     state.lastNonce = nonce;
@@ -1259,6 +1364,81 @@
     }, 1500);
   }
 
+  function renderLiveTimerState(data) {
+    const enabled = Boolean(data?.enabled);
+    const visualsEnabled = Boolean(data?.visualsEnabled);
+    const timer = computeTimer(data || {});
+    const timerHero = $("acgTimerHero");
+    const timerValue = $("acgTimerValue");
+    const phaseLabel = $("acgPhaseLabel");
+    const timeDrainOverlay = $("acgTimeDrainOverlay");
+    const timeDrainTimer = $("acgTimeDrainTimer");
+    if (!timerHero || !timerValue || !phaseLabel) {
+      return;
+    }
+
+    if (!enabled) {
+      setText("acgTimer", "Off");
+      setText(phaseLabel, "Off");
+      setText(timerValue, "--");
+      setStyleProperty(timerHero, "--timer-progress", "1turn");
+      setStyleProperty(timerHero, "--timer-color", "#8c96ac");
+      timerHero.classList.remove("danger");
+      timerValue.classList.remove("danger");
+    } else if (!visualsEnabled) {
+      setText("acgTimer", "Vibration only");
+      setText(phaseLabel, "Vibration");
+      setText(timerValue, "--");
+      setStyleProperty(timerHero, "--timer-progress", "1turn");
+      setStyleProperty(timerHero, "--timer-color", "#8c96ac");
+      timerHero.classList.remove("danger");
+      timerValue.classList.remove("danger");
+    } else if (timer.phase === "idle") {
+      const timerRamp = getTimerRampColors(data);
+      setText("acgTimer", "Ready");
+      setText(phaseLabel, "Ready");
+      setText(timerValue, "--");
+      setStyleProperty(timerHero, "--timer-progress", "1turn");
+      setStyleProperty(timerHero, "--timer-color", timerRamp.idle);
+      timerHero.classList.remove("danger");
+      timerValue.classList.remove("danger");
+    } else if (timer.free) {
+      const timerRamp = getTimerRampColors(data);
+      setText("acgTimer", "First card free");
+      setText(phaseLabel, "Question");
+      setText(timerValue, "FREE");
+      setStyleProperty(timerHero, "--timer-progress", "1turn");
+      setStyleProperty(timerHero, "--timer-color", timerRamp.free);
+      timerHero.classList.remove("danger");
+      timerValue.classList.remove("danger");
+    } else {
+      const timerRamp = getTimerRampColors(data);
+      const ratio = timer.total ? clamp(timer.remaining / timer.total, 0, 1) : 0;
+      const danger = ratio <= 0.3;
+      const blendTarget = ratio > 0.5 ? timerRamp.yellow : timerRamp.red;
+      const blendStart = ratio > 0.5 ? timerRamp.green : timerRamp.yellow;
+      const localT = ratio > 0.5 ? (1 - ratio) / 0.5 : (0.5 - ratio) / 0.5;
+      const color = blendRgb(blendStart, blendTarget, clamp(localT, 0, 1));
+      setText("acgTimer", timer.paused ? `Paused ${timer.secondsText}s` : `${timer.phase} ${timer.secondsText}s`);
+      setText(phaseLabel, timer.paused ? "Paused" : timer.phase);
+      setText(timerValue, timer.secondsText);
+      setStyleProperty(timerHero, "--timer-progress", `${ratio}turn`);
+      setStyleProperty(timerHero, "--timer-color", color);
+      timerHero.classList.toggle("danger", danger);
+      timerValue.classList.toggle("danger", danger);
+    }
+
+    if (timeDrainOverlay && timeDrainTimer) {
+      const activeTimeDrain = enabled
+        && visualsEnabled
+        && Number(data?.timeDrainFlag || 0) > 0
+        && Number(data?.currentCardFlag || 0) === Number(data?.timeDrainFlag || 0)
+        && timer.phase === "question";
+      timeDrainOverlay.classList.toggle("visible", activeTimeDrain);
+      setText(timeDrainTimer, timer.free ? "FREE" : timer.phase === "idle" ? "--" : timer.secondsText);
+    }
+  }
+
   function render(data) {
     ensureMounted();
     const sidebar = $("speed-streak-sidebar");
@@ -1269,6 +1449,7 @@
     state.data = data;
     const enabled = Boolean(data.enabled);
     const displayMode = String(data.displayMode || "inline");
+    const renderMode = getRenderMode(data);
     const visualsEnabled = Boolean(data.visualsEnabled);
     const orbitAnimationEnabled = Boolean(data.orbitAnimationEnabled ?? true);
     const sidebarCollapsed = displayMode !== "compatibility" && Boolean(data.sidebarCollapsed);
@@ -1276,13 +1457,7 @@
     const sidebarBackground = String(data.sidebarBackground || "").trim();
 
     const colors = Array.isArray(data.satelliteColors) ? data.satelliteColors : [];
-    const timer = computeTimer(data);
     const core = $("acgCore");
-    const timerHero = $("acgTimerHero");
-    const timerValue = $("acgTimerValue");
-    const phaseLabel = $("acgPhaseLabel");
-    const timeDrainOverlay = $("acgTimeDrainOverlay");
-    const timeDrainTimer = $("acgTimeDrainTimer");
     const offOverlay = $("acgOffOverlay");
     const enabledToggle = $("acgEnabledToggle");
     const collapseTab = $("acgCollapseTab");
@@ -1301,8 +1476,10 @@
     sidebar.classList.toggle("off", !enabled);
     sidebar.classList.toggle("visuals-disabled", enabled && !visualsEnabled);
     sidebar.classList.toggle("orbit-static", enabled && visualsEnabled && !orbitAnimationEnabled);
+    sidebar.classList.toggle("ultra-low-resource", enabled && visualsEnabled && renderMode === "ultra_low_resource");
     sidebar.classList.toggle("collapsed", sidebarCollapsed);
     sidebar.dataset.displayMode = displayMode;
+    sidebar.dataset.renderMode = renderMode;
     sidebar.dataset.theme = appearanceMode;
     applyCustomColors(sidebar, data.customColors || {}, appearanceMode);
     if (sidebarBackground !== state.lastSidebarBackground) {
@@ -1353,58 +1530,7 @@
     }
     state.appearanceModeDraft = appearanceMode;
     syncAppearanceButtons();
-
-    if (!enabled) {
-      setText("acgTimer", "Off");
-      setText(phaseLabel, "Off");
-      setText(timerValue, "--");
-      setStyleProperty(timerHero, "--timer-progress", "1turn");
-      setStyleProperty(timerHero, "--timer-color", "#8c96ac");
-      timerHero.classList.remove("danger");
-      timerValue.classList.remove("danger");
-    } else if (!visualsEnabled) {
-      setText("acgTimer", "Vibration only");
-      setText(phaseLabel, "Vibration");
-      setText(timerValue, "--");
-      setStyleProperty(timerHero, "--timer-progress", "1turn");
-      setStyleProperty(timerHero, "--timer-color", "#8c96ac");
-      timerHero.classList.remove("danger");
-      timerValue.classList.remove("danger");
-    } else if (timer.phase === "idle") {
-      const timerRamp = getTimerRampColors(data);
-      setText("acgTimer", "Ready");
-      setText(phaseLabel, "Ready");
-      setText(timerValue, "--");
-      setStyleProperty(timerHero, "--timer-progress", "1turn");
-      setStyleProperty(timerHero, "--timer-color", timerRamp.idle);
-      timerHero.classList.remove("danger");
-      timerValue.classList.remove("danger");
-    } else if (timer.free) {
-      const timerRamp = getTimerRampColors(data);
-      setText("acgTimer", "First card free");
-      setText(phaseLabel, "Question");
-      setText(timerValue, "FREE");
-      setStyleProperty(timerHero, "--timer-progress", "1turn");
-      setStyleProperty(timerHero, "--timer-color", timerRamp.free);
-      timerHero.classList.remove("danger");
-      timerValue.classList.remove("danger");
-    } else {
-      const timerRamp = getTimerRampColors(data);
-      const seconds = Math.max(0, timer.remaining / 1000);
-      const ratio = timer.total ? clamp(timer.remaining / timer.total, 0, 1) : 0;
-      const danger = ratio <= 0.3;
-      const blendTarget = ratio > 0.5 ? timerRamp.yellow : timerRamp.red;
-      const blendStart = ratio > 0.5 ? timerRamp.green : timerRamp.yellow;
-      const localT = ratio > 0.5 ? (1 - ratio) / 0.5 : (0.5 - ratio) / 0.5;
-      const color = blendRgb(blendStart, blendTarget, clamp(localT, 0, 1));
-      setText("acgTimer", timer.paused ? `Paused ${seconds.toFixed(1)}s` : `${timer.phase} ${seconds.toFixed(1)}s`);
-      setText(phaseLabel, timer.paused ? "Paused" : timer.phase);
-      setText(timerValue, seconds.toFixed(1));
-      setStyleProperty(timerHero, "--timer-progress", `${ratio}turn`);
-      setStyleProperty(timerHero, "--timer-color", color);
-      timerHero.classList.toggle("danger", danger);
-      timerValue.classList.toggle("danger", danger);
-    }
+    renderLiveTimerState(data);
 
     core.classList.toggle("paused", Boolean(data.paused));
     core.classList.toggle("failed", Boolean(data.failureVisualActive));
@@ -1421,13 +1547,6 @@
     }
     if (offOverlay) {
       offOverlay.classList.toggle("visible", !enabled && !state.settingsOpen);
-    }
-    if (timeDrainOverlay && timeDrainTimer) {
-      const activeTimeDrain = enabled && visualsEnabled && Number(data.timeDrainFlag || 0) > 0
-        && Number(data.currentCardFlag || 0) === Number(data.timeDrainFlag || 0)
-        && timer.phase === "question";
-      timeDrainOverlay.classList.toggle("visible", activeTimeDrain);
-      setText(timeDrainTimer, timer.free ? "FREE" : timer.phase === "idle" ? "--" : Math.max(0, timer.remaining / 1000).toFixed(1));
     }
     handleStateEffects(data);
     if (enabled && visualsEnabled && orbitAnimationEnabled && !sidebarCollapsed) {
@@ -1464,19 +1583,14 @@
   }
 
   function animationLoop() {
-    if (!state.data || getRenderMode(state.data) !== "classic") {
-      state.animationId = 0;
-      return;
-    }
-    render(state.data);
-    state.animationId = requestAnimationFrame(animationLoop);
+    stopTimerLoop();
   }
 
   window.SpeedStreak = {
     receiveState(nextState) {
       ensureMounted();
       render(nextState);
-      syncAnimationLoop();
+      syncTimerLoop();
     },
   };
 
