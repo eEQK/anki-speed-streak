@@ -1,8 +1,8 @@
 # Speed Streak v1.14
 
-This folder contains the Speed Streak v1.14 version of the project packaged as an Anki add-on.
+Speed Streak is an Anki add-on project with source code at the repository root.
 
-It does not modify the original standalone files in the parent folder.
+This repository now uses a standard single-source layout: edit, build, and package directly from root.
 
 ## What it does
 
@@ -11,7 +11,7 @@ It does not modify the original standalone files in the parent folder.
 - Sends controller rumble on Windows through XInput and uses a browser gamepad fallback on non-Windows platforms when available
 - Removes the need for the external browser page, AnkiConnect, and AutoHotkey
 
-## Folder layout
+## Project layout
 
 - `__init__.py`: add-on entrypoint and Anki hook wiring
 - `game_state.py`: native Python game engine
@@ -22,7 +22,7 @@ It does not modify the original standalone files in the parent folder.
 
 ## Installation
 
-Anki loads add-ons from the `addons21` folder in your Anki profile, not from arbitrary project folders.
+Anki loads add-ons from the `addons21` folder in your profile, not directly from your git checkout.
 
 To install this manually:
 
@@ -30,7 +30,7 @@ To install this manually:
 2. Go to `Tools -> Add-ons -> View Files`.
 3. Close Anki.
 4. In the folder that opens, create a new folder named `speed_streak_v1_14`.
-5. Copy the contents of this project folder into that new folder.
+5. Copy this repository's root add-on files into that new folder.
 6. Start Anki again.
 
 If the add-on loads successfully, the review screen will show Speed Streak in the display mode you choose at launch.
@@ -43,7 +43,7 @@ You can also run:
 .\install_to_anki.ps1
 ```
 
-from this folder, and it will copy the add-on into Anki's default `addons21` directory for you.
+from the repository root, and it will copy the add-on into Anki's default `addons21` directory for you.
 The installer preserves the installed add-on's `user_files` folder so Review Later cohort history survives updates.
 
 ### Faster install on macOS
@@ -54,7 +54,7 @@ You can also run:
 ./install_to_anki.sh
 ```
 
-from this folder, and it will copy the add-on into the default macOS `addons21` directory for you while preserving `user_files`.
+from the repository root, and it will copy the add-on into the default macOS `addons21` directory for you while preserving `user_files`.
 
 ## First run
 
@@ -82,7 +82,7 @@ The installed add-on's `user_files` folder is preserved during updates, so Revie
 
 AnkiWeb accepts add-ons as `.ankiaddon` zip archives.
 
-This folder now includes:
+This repository includes:
 
 - `manifest.json` for direct file installs outside AnkiWeb
 - `build_ankiaddon.ps1` to create a clean upload package
@@ -125,3 +125,9 @@ AnkiWeb expects the archive contents to have files like `__init__.py` at the roo
 - This add-on is designed for Windows haptics first.
 - Controller rumble depends on either native XInput support on Windows or browser gamepad haptics support on non-Windows platforms, and may not work with every controller or driver stack.
 - The overlay keeps the orb on the left and pushes the review card to the right.
+
+## Historical releases
+
+Older release-folder snapshots were removed from this repository layout.
+
+Release history is preserved in `CHANGELOG.md`.

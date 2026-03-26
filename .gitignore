@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.ankiaddon
+*.zip
+.DS_Store
+.ankiaddon-build/

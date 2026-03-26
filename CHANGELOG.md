@@ -1,8 +1,8 @@
 # Speed Streak Changelog
 
-This changelog tracks the versioned Speed Streak add-on folders in this repository.
+This changelog tracks the Speed Streak release history.
 
-It is written as a repository-level record so the older frozen version folders can stay unchanged.
+The repository now uses a single-source layout at root, and historical release notes are preserved here.
 
 ## `speed-streak-addon`
 
